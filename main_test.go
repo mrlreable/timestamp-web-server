@@ -1,12 +1,16 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+const basePath string = "http://127.0.0.1:8090"
 
 func TestSetTimeValidFormat(t *testing.T) {
 	// Init channel
@@ -128,4 +132,65 @@ func TestMiddleware(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	// Start the server in a separate goroutine
+	go func() {
+		main()
+	}()
+
+	// Wait for server to start up -> not ideal
+	time.Sleep(2 * time.Second)
+
+	const requests = 100
+
+	// Add new waitgroup for each GET and POST request
+	var wg sync.WaitGroup
+	wg.Add(requests * 2)
+
+	// Concurrent POST /time/set
+	for i := 0; i < requests; i++ {
+		go func(i int) {
+			defer wg.Done()
+
+			// Generate unique timestamp for each POST request
+			timestamp := time.Now().Add(time.Duration(i) * time.Second).Format(time.UnixDate)
+			resp, err := http.Post(basePath+"/time/set", "text/plain", strings.NewReader(timestamp))
+			if err != nil {
+				t.Errorf("POST request failed: %v", err)
+				return
+			}
+			defer resp.Body.Close()
+
+			_, err = io.ReadAll(resp.Body)
+			if err != nil {
+				t.Errorf("Error reading POST response: %v", err)
+				return
+			}
+		}(i)
+	}
+
+	// Concurrent GET /time/fetch
+	for i := 0; i < requests; i++ {
+		go func() {
+			defer wg.Done()
+
+			resp, err := http.Get(basePath + "/time/fetch")
+			if err != nil {
+				t.Errorf("GET request failed: %v", err)
+				return
+			}
+			defer resp.Body.Close()
+
+			_, err = io.ReadAll(resp.Body)
+			if err != nil {
+				t.Errorf("Error reading GET response: %v", err)
+				return
+			}
+		}()
+	}
+
+	// Wait for requests to complete
+	wg.Wait()
 }
